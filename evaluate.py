@@ -176,7 +176,7 @@ def plot_comparison(results):
     empty = [r['avg_empty'] for r in results.values()]
     reward_data = [r['all_rewards'] for r in results.values()]
 
-    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1']
+    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#F7B801']
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
 
     # Revenue

@@ -145,8 +145,12 @@ class RideHailingEnv:
                 self.total_revenue += fare
                 self.rides_completed += 1
                 
-                # Update vehicle: busy (simplified)
-                self.vehicle_states[vehicle_id, 1] = 0  # Not idle
+                # Mark vehicle busy for this step only
+                self.vehicle_states[vehicle_id, 1] = 0
+                # After completing ride, vehicle instantly becomes idle at destination
+                self.vehicle_states[vehicle_id, 0] = dest_zone
+                self.vehicle_states[vehicle_id, 1] = 1
+
                 
                 # Note: ride completion not modeled over multiple steps for simplicity
         
