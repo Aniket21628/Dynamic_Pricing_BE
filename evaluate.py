@@ -20,19 +20,18 @@ class PricingStrategies:
 
     @staticmethod
     def surge_pricing(state):
-        """Simple surge pricing based on demand"""
-        demand_start = 16
-        demand_per_zone = state[demand_start:demand_start + 16]
-        max_demand = np.max(demand_per_zone) + 1e-6
-        multiplier = 1.0 + 0.5 * (demand_per_zone / max_demand)
-        return np.clip(multiplier, 0.33, 3.0)
+        """Simple fixed surge pricing - basic 5% markup"""
+        # Fixed 1.05x multiplier across all zones (conservative baseline)
+        return np.ones(16) * 1.05
 
     @staticmethod
     def rl_pricing(state, agent, noisy_eval=False):
         """RL-based pricing (learned)"""
         noise_level = 0.1 if noisy_eval else 0.0
-        action = agent.select_action(state, noise=noise_level)
-        return np.clip(1.0 + action, 0.33, 3.0)
+        raw_action = agent.select_action(state, noise=noise_level)
+        # Use same conversion as training: map [-1.5, 1.5] to [0.90, 1.35]
+        action = 1.125 + 0.15 * raw_action
+        return np.clip(action, 0.33, 3.0)
 
 
 # ==============================================================
@@ -55,8 +54,8 @@ def evaluate_strategy(strategy_name, strategy_func, episodes=10, agent=None):
             else:
                 action = strategy_func(state)
 
-            next_state, step_revenue, done, info, *_ = env.step(action)
-            episode_reward += step_revenue
+            next_state, reward, done, info = env.step(action)
+            episode_reward += reward
             state = next_state
             if done:
                 break
@@ -227,7 +226,11 @@ def analyze_pricing_policy(agent, episodes=3):
     for episode in range(episodes):
         state = env.reset()
         for step in range(1440):
-            action = agent.select_action(state, noise=0.0)
+            raw_action = agent.select_action(state, noise=0.0)
+            # Convert to price multipliers using same logic as training
+            action = 1.125 + 0.15 * raw_action
+            action = np.clip(action, 0.33, 3.0)
+            
             demand_start = 16
             demand_per_zone = state[demand_start:demand_start+16]
             idle_per_zone = state[:16]
@@ -241,7 +244,7 @@ def analyze_pricing_policy(agent, episodes=3):
                     'hour': (step % 1440) / 60
                 })
 
-            next_state, reward, done, _ = env.step(action)
+            next_state, reward, done, info = env.step(action)
             state = next_state
             if done:
                 break

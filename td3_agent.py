@@ -8,15 +8,23 @@ import copy
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, max_action):
         super(Actor, self).__init__()
-        self.l1 = nn.Linear(state_dim, 400)
-        self.l2 = nn.Linear(400, 300)
-        self.l3 = nn.Linear(300, action_dim)
+        self.l1 = nn.Linear(state_dim, 512)
+        self.bn1 = nn.BatchNorm1d(512)
+        self.l2 = nn.Linear(512, 384)
+        self.bn2 = nn.BatchNorm1d(384)
+        self.l3 = nn.Linear(384, 256)
+        self.l4 = nn.Linear(256, action_dim)
+        self.dropout = nn.Dropout(0.1)
         self.max_action = max_action
 
     def forward(self, state):
-        a = F.relu(self.l1(state))
-        a = F.relu(self.l2(a))
-        return self.max_action * torch.tanh(self.l3(a))
+        a = F.relu(self.bn1(self.l1(state)))
+        a = self.dropout(a)
+        a = F.relu(self.bn2(self.l2(a)))
+        a = self.dropout(a)
+        a = F.relu(self.l3(a))
+        a = self.l4(a)
+        return self.max_action * torch.tanh(a)
 
 
 # ----- CRITIC -----
@@ -24,29 +32,41 @@ class Critic(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(Critic, self).__init__()
         # Q1 architecture
-        self.l1 = nn.Linear(state_dim + action_dim, 400)
-        self.l2 = nn.Linear(400, 300)
-        self.l3 = nn.Linear(300, 1)
+        self.l1 = nn.Linear(state_dim + action_dim, 512)
+        self.l2 = nn.Linear(512, 384)
+        self.l3 = nn.Linear(384, 256)
+        self.l4 = nn.Linear(256, 1)
         # Q2 architecture
-        self.l4 = nn.Linear(state_dim + action_dim, 400)
-        self.l5 = nn.Linear(400, 300)
-        self.l6 = nn.Linear(300, 1)
+        self.l5 = nn.Linear(state_dim + action_dim, 512)
+        self.l6 = nn.Linear(512, 384)
+        self.l7 = nn.Linear(384, 256)
+        self.l8 = nn.Linear(256, 1)
+        self.dropout = nn.Dropout(0.1)
 
     def forward(self, state, action):
         sa = torch.cat([state, action], 1)
+        # Q1
         q1 = F.relu(self.l1(sa))
+        q1 = self.dropout(q1)
         q1 = F.relu(self.l2(q1))
-        q1 = self.l3(q1)
-        q2 = F.relu(self.l4(sa))
-        q2 = F.relu(self.l5(q2))
-        q2 = self.l6(q2)
+        q1 = self.dropout(q1)
+        q1 = F.relu(self.l3(q1))
+        q1 = self.l4(q1)
+        # Q2
+        q2 = F.relu(self.l5(sa))
+        q2 = self.dropout(q2)
+        q2 = F.relu(self.l6(q2))
+        q2 = self.dropout(q2)
+        q2 = F.relu(self.l7(q2))
+        q2 = self.l8(q2)
         return q1, q2
 
     def Q1(self, state, action):
         sa = torch.cat([state, action], 1)
         q1 = F.relu(self.l1(sa))
         q1 = F.relu(self.l2(q1))
-        return self.l3(q1)
+        q1 = F.relu(self.l3(q1))
+        return self.l4(q1)
 
 
 # ----- REPLAY BUFFER -----
@@ -96,7 +116,7 @@ class TD3Agent:
 
         self.actor = Actor(state_dim, action_dim, max_action)
         self.actor_target = copy.deepcopy(self.actor)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=3e-4)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-4)
 
         self.critic = Critic(state_dim, action_dim)
         self.critic_target = copy.deepcopy(self.critic)
@@ -115,7 +135,10 @@ class TD3Agent:
 
     def select_action(self, state, noise=0.1):
         state = torch.FloatTensor(state.reshape(1, -1))
-        action = self.actor(state).detach().cpu().numpy()[0]
+        self.actor.eval()  # Set to eval mode for BatchNorm
+        with torch.no_grad():
+            action = self.actor(state).cpu().numpy()[0]
+        self.actor.train()  # Set back to train mode
         if noise != 0:
             action = action + np.random.normal(0, noise, size=action.shape)
         return np.clip(action, -self.max_action, self.max_action)

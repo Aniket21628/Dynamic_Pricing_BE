@@ -69,22 +69,48 @@ class RideHailingEnv:
         """
         Execute one step with pricing actions
         actions: array of price multipliers for each zone (expected positive)
-        Returns: (next_state, step_revenue, done, info)
-        - step_revenue: revenue earned in this single step (not cumulative)
-        - info contains step-level metrics: {'step_revenue':..., 'step_empty_trips':...}
+        Returns: (next_state, reward, done, info)
+        - reward: comprehensive reward balancing revenue, ride completion, and efficiency
+        - info contains step-level metrics
         """
         # Update price multipliers (env expects multipliers, we clip to valid range)
         self.price_multipliers = np.clip(actions, 0.33, 3.0)
         
+        # Track total demand generated for fulfillment rate calculation
+        demand_before = sum(len(self.demand_queue[z]) for z in range(self.num_zones))
+        
         # Generate demand based on time of day
         self._generate_demand()
         
-        # Match vehicles to rides -> returns step revenue (not cumulative)
-        step_revenue = self._match_and_dispatch()
+        # Calculate new demand generated this step
+        demand_after_gen = sum(len(self.demand_queue[z]) for z in range(self.num_zones))
+        new_demand = demand_after_gen - demand_before
+        
+        # Match vehicles to rides -> returns step revenue and rides completed
+        step_revenue, step_rides = self._match_and_dispatch()
+        
+        # Calculate demand fulfillment rate
+        demand_fulfillment_rate = step_rides / max(new_demand, 1)
         
         # Vehicle repositioning -> returns number of empty repositioning trips this step
         step_empty_trips = self._reposition_vehicles()
         self.empty_trips += step_empty_trips
+        
+        # Calculate comprehensive reward
+        # Primary: Revenue from rides
+        # Bonus: High ride completion (incentivize serving customers)
+        # Penalty: Lost demand (unfulfilled requests)
+        # Penalty: Empty repositioning trips (inefficiency)
+        
+        unfulfilled_demand = max(0, new_demand - step_rides)
+        
+        reward = (
+            step_revenue * 1.0 +                              # Base revenue
+            step_rides * 3.0 +                                # Strong bonus for completing rides
+            demand_fulfillment_rate * step_revenue * 0.5 +    # Bonus for high fulfillment rate
+            -unfulfilled_demand * 2.0 +                       # Penalty for lost customers
+            -step_empty_trips * 1.5                           # Penalty for empty repositioning
+        )
         
         # Update time
         self.current_step += 1
@@ -92,16 +118,21 @@ class RideHailingEnv:
         
         info = {
             'step_revenue': step_revenue,
+            'step_rides': step_rides,
             'step_empty_trips': step_empty_trips,
             'total_revenue': self.total_revenue,
             'rides_completed': self.rides_completed,
-            'empty_trips': self.empty_trips
+            'empty_trips': self.empty_trips,
+            'new_demand': new_demand,
+            'unfulfilled_demand': unfulfilled_demand,
+            'demand_fulfillment_rate': demand_fulfillment_rate,
+            'reward': reward
         }
         
-        return self._get_state(), step_revenue, done, info
+        return self._get_state(), reward, done, info
     
     def _generate_demand(self):
-        """Generate demand based on time and price"""
+        """Generate demand based on time and price with improved elasticity"""
         hour = (self.current_step % self.time_steps_per_day) / 60
         
         # Base demand varies by hour
@@ -113,9 +144,18 @@ class RideHailingEnv:
             base_demand = 5   # Night
         
         for zone in range(self.num_zones):
-            # Price affects demand
+            # Price affects demand with improved elasticity model
+            # Price elasticity: demand decreases more gradually
             multiplier = self.price_multipliers[zone]
-            demand = max(0, int(base_demand / multiplier + np.random.normal(0, 2)))
+            
+            # More realistic elasticity: demand drops with exponential decay
+            # At 1.0x: full demand, at 1.5x: ~70% demand, at 2.0x: ~50% demand
+            price_effect = np.exp(-0.4 * (multiplier - 1.0))
+            
+            # Calculate demand with noise
+            expected_demand = base_demand * price_effect
+            noise = np.random.normal(0, 1.5)
+            demand = max(0, int(expected_demand + noise))
             
             for _ in range(demand):
                 dest_zone = np.random.randint(0, self.num_zones)
@@ -124,6 +164,7 @@ class RideHailingEnv:
     def _match_and_dispatch(self):
         """Match vehicles to rides and calculate revenue for this step"""
         step_revenue = 0.0
+        step_rides = 0
         
         for zone in range(self.num_zones):
             # Find idle vehicles in zone
@@ -144,6 +185,7 @@ class RideHailingEnv:
                 step_revenue += fare
                 self.total_revenue += fare
                 self.rides_completed += 1
+                step_rides += 1
                 
                 # Mark vehicle busy for this step only
                 self.vehicle_states[vehicle_id, 1] = 0
@@ -154,7 +196,7 @@ class RideHailingEnv:
                 
                 # Note: ride completion not modeled over multiple steps for simplicity
         
-        return step_revenue
+        return step_revenue, step_rides
     
     def _reposition_vehicles(self):
         """Reposition idle vehicles to areas with demand.

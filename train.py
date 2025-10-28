@@ -61,36 +61,25 @@ def train_dynamic_pricing(episodes=50, max_steps=1440):
         start_time = time.time()
 
         for step in range(max_steps):
-            # Action with exploration noise
-            action = agent.select_action(state)
-            noise = np.random.normal(0, 0.08, size=action_dim)
-            action = np.clip(action + noise, 0.33, max_action)
+            # Select action with exploration noise
+            # Output is in range [-max_action, max_action]
+            raw_action = agent.select_action(state, noise=0.12)
+            
+            # Convert to price multipliers: map [-1.5, 1.5] to [0.90, 1.35] for balanced revenue + volume
+            # This allows competitive pricing while maintaining ride completion focus
+            action = 1.125 + 0.15 * raw_action  # Range: [0.90, 1.35]
+            action = np.clip(action, 0.33, 3.0)
 
             next_state, reward, done, info = env.step(action)
-
-            # ---- Optimized Reward Shaping ----
-            step_revenue = info.get("step_revenue", 0)
-            fulfilled = info.get("fulfilled_requests", 0)
-            total_demand = info.get("total_demand", 1)
-            idle_vehicles = np.sum(info.get("idle_per_zone", np.zeros(16)))
-            empty_trips = info.get("empty_trips", 0)
-
-            demand_ratio = fulfilled / (total_demand + 1e-6)
-
-            shaped_reward = (
-                reward
-                + 0.04 * step_revenue
-                + 0.002 * demand_ratio * step_revenue
-                - 0.0015 * idle_vehicles
-                - 0.0005 * empty_trips
-                - 0.001 * np.mean(np.maximum(action - 1.3, 0)) * step_revenue
-            )
-
-            agent.replay_buffer.add(state, action, shaped_reward, next_state, done)
+            
+            # Environment now provides comprehensive reward
+            # No additional shaping needed - use reward directly
+            agent.replay_buffer.add(state, raw_action, reward, next_state, done)
             state = next_state
-            ep_reward += shaped_reward
+            ep_reward += reward
 
-            if step % 2 == 0:
+            # Train more frequently for faster learning
+            if step % 1 == 0 and agent.replay_buffer.size >= 256:
                 agent.train(batch_size=256)
 
             if done:
